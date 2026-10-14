@@ -2,7 +2,7 @@ import { DownloadStatusBar } from '@/components/DownloadStatusBar';
 import { useRomDownload } from '@/hooks/useRomDownload';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -41,7 +41,8 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
     const { downloadRom } = useRomDownload();
     const { showErrorToast, showInfoToast, showSuccessToast } = useToast();
     const { platformFolders, searchPlatformFolder } = usePlatformFolders();
-    const { checkMultipleRoms, isRomDownloaded, isCheckingRom, refreshRomCheck } = useRomFileSystem();
+    const { isRomDownloaded, isCheckingRom, refreshRomCheck, checkRomFilesInFolder } = useRomFileSystem();
+    const checkedRomIds = useRef(new Set<number>());
     const insets = useSafeAreaInsets();
 
     // Dynamic columns based on screen orientation and device size
@@ -72,18 +73,33 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
         };
 
         if (collectionId) {
+            checkedRomIds.current.clear();
             fetchData();
         }
     }, [collectionId]);
 
-    // Check filesystem for existing ROMs when ROMs are loaded
+    // Check which newly loaded ROMs are already on disk: one folder lookup and
+    // one directory listing per platform per page, rather than one per ROM file.
     useEffect(() => {
-        Promise.all(roms.map(async rom => {
-            const platformFolder = await searchPlatformFolder({ name: rom.platform_name, slug: rom.platform_slug } as Platform);
-            if (!platformFolder) return;
-            // Check all files for each ROM
-            Promise.all(rom.files.map(file => refreshRomCheck(file, platformFolder)));
-        }));
+        const romsByPlatform = new Map<string, Rom[]>();
+        for (const rom of roms) {
+            if (checkedRomIds.current.has(rom.id)) continue;
+            const platformRoms = romsByPlatform.get(rom.platform_slug) ?? [];
+            platformRoms.push(rom);
+            romsByPlatform.set(rom.platform_slug, platformRoms);
+        }
+
+        romsByPlatform.forEach(async (platformRoms) => {
+            try {
+                const { platform_name, platform_slug } = platformRoms[0];
+                const platformFolder = await searchPlatformFolder({ name: platform_name, slug: platform_slug } as Platform);
+                if (!platformFolder) return;
+                platformRoms.forEach(rom => checkedRomIds.current.add(rom.id));
+                await checkRomFilesInFolder(platformRoms.flatMap(rom => rom.files ?? []), platformFolder);
+            } catch (error) {
+                console.error('Error checking downloaded ROMs:', error);
+            }
+        });
     }, [roms, platformFolders]);
 
     // Monitor completed downloads to refresh ROM status in collection view
@@ -95,21 +111,10 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
     const onRefresh = async () => {
         setRefreshing(true);
         try {
+            // Re-check every ROM against its folder once the list reloads
+            checkedRomIds.current.clear();
             await fetchRoms();
-            console.log('Collection data refreshed, forcing complete ROM check');
-
-            // Force a complete refresh of ROM checks for all ROMs
-            setTimeout(async () => {
-                if (roms && roms.length > 0) {
-                    console.log('Force refreshing all ROM checks in collection');
-                    for (const rom of roms) {
-                        const platformFolder = await searchPlatformFolder({ name: rom.platform_name, slug: rom.platform_slug } as Platform);
-                        if (!platformFolder) continue;
-                        await refreshRomCheck(rom.files[0], platformFolder);
-                    }
-                    console.log('All collection ROM checks refreshed');
-                }
-            }, 500); // Small delay to ensure data is updated
+            console.log('Collection data refreshed');
         } catch (error) {
             console.error('Error during refresh:', error);
         } finally {
@@ -118,7 +123,7 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
     };
 
     const handleDownload = async (rom: Rom) => {
-        if (!rom) return;
+        if (!rom || !rom.files?.[0]) return;
 
         try {
             await downloadRom(rom, rom.files[0], { name: rom.platform_name, slug: rom.platform_slug } as Platform);
@@ -168,7 +173,7 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
         }
 
         // Filter out ROMs that are already being downloaded or already exist on filesystem
-        const romsToDownload = roms.filter(rom => !isRomDownloading(rom.files[0]) && !isRomDownloaded(rom.files[0]));
+        const romsToDownload = roms.filter(rom => rom.files?.[0] && !isRomDownloading(rom.files[0]) && !isRomDownloaded(rom.files[0]));
 
         if (romsToDownload.length === 0) {
             showInfoToast(t('allRomsDownloaded'), t('info'));
@@ -209,7 +214,7 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
         );
     };
 
-    const RomCard = ({ rom }: { rom: Rom & { isEmpty?: boolean } }) => {
+    const renderRomCard = (rom: Rom & { isEmpty?: boolean }) => {
         if (rom.isEmpty) {
             return <View style={[styles.gameCard, { width: cardWidth }]} />;
         }
@@ -350,7 +355,7 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
     };
 
     // Calculate available ROMs to download
-    const availableToDownload = roms.filter(rom => !isRomDownloading(rom.files[0]) && !isRomDownloaded(rom.files[0])).length;
+    const availableToDownload = roms.filter(rom => rom.files?.[0] && !isRomDownloading(rom.files[0]) && !isRomDownloaded(rom.files[0])).length;
 
     return (
         <ProtectedRoute>
@@ -404,7 +409,7 @@ export default function CollectionScreen({ }: CollectionScreenProps) {
                 {/* Roms Grid */}
                 <FlatList
                     data={prepareGridData(roms)}
-                    renderItem={({ item }) => <RomCard rom={item} />}
+                    renderItem={({ item }) => renderRomCard(item)}
                     keyExtractor={(item) => item.id.toString()}
                     numColumns={columns}
                     key={`${columns}-${isLandscape}`} // Force re-render when columns or orientation change
