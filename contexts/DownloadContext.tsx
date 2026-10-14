@@ -44,7 +44,7 @@ interface DownloadContextType {
     activeDownloads: DownloadItem[];
     completedDownloads: DownloadItem[];
     failedDownloads: DownloadItem[];
-    isRomDownloading: (romFile: RomFile) => boolean;
+    isRomDownloading: (romFile?: RomFile) => boolean;
     getDownloadById: (id: string) => DownloadItem | undefined;
     addRomToQueue: (rom: Rom, romFile: RomFile, platformFolder: PlatformFolder) => string;
     removeFromQueue: (downloadId: string) => void;
@@ -396,7 +396,8 @@ export const DownloadProvider: React.FC<DownloadProviderProps> = ({ children }) 
         d.status === DownloadStatus.CANCELLED
     );
 
-    const isRomDownloading = (romFile: RomFile): boolean => {
+    const isRomDownloading = (romFile?: RomFile): boolean => {
+        if (!romFile) return false;
         return downloads.some(d =>
             d.romFile.rom_id === romFile.rom_id &&
             (d.status === DownloadStatus.DOWNLOADING || d.status === DownloadStatus.PENDING)

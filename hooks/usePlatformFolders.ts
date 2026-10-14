@@ -263,7 +263,7 @@ export const usePlatformFolders = () => {
 
                         for (const file of files) {
                             if (file.name === platform.slug) {
-                                return await savePlatformFolder(platform.fs_slug, platform.name, file.uri);
+                                return await savePlatformFolder(platform.slug, platform.name, file.uri);
                             }
                         }
                     } else {
@@ -278,7 +278,7 @@ export const usePlatformFolders = () => {
                                     const fileInfo = await FileSystem.getInfoAsync(platformFolderUri);
 
                                     if (fileInfo.exists && fileInfo.isDirectory) {
-                                        return await savePlatformFolder(platform.fs_slug, platform.name, platformFolderUri);
+                                        return await savePlatformFolder(platform.slug, platform.name, platformFolderUri);
                                     }
                                 }
                             }

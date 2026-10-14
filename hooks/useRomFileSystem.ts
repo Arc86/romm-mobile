@@ -12,6 +12,31 @@ interface RomHash {
     lastModified: number;
 }
 
+// Listing a large SAF folder is expensive, so concurrent checks against the
+// same folder share a single in-flight listing instead of each listing it again.
+const inFlightListings = new Map<string, Promise<string[]>>();
+
+const listFolderFileNames = (folderUri: string): Promise<string[]> => {
+    const pending = inFlightListings.get(folderUri);
+    if (pending) return pending;
+
+    const listing = (async () => {
+        if (Platform.OS === 'android') {
+            return (await SAF.listFiles(folderUri)).map(file => file.name);
+        }
+        // For iOS, use expo-file-system
+        return await FileSystem.readDirectoryAsync(folderUri);
+    })().finally(() => inFlightListings.delete(folderUri));
+
+    inFlightListings.set(folderUri, listing);
+    return listing;
+};
+
+const romFileExistsIn = (fileList: string[], romFile: RomFile): boolean => {
+    const fileNameWithoutExtension = romFile.file_name.replace(/\.[^/.]+$/, '');
+    return fileList.some(file => file.includes(fileNameWithoutExtension));
+};
+
 export const useRomFileSystem = () => {
     const { searchPlatformFolder } = usePlatformFolders();
     const [fileChecks, setFileChecks] = useState<Record<number, boolean>>({});
@@ -30,21 +55,10 @@ export const useRomFileSystem = () => {
         }
 
         try {
-
-            const fileNameWithoutExtension = romFile.file_name.replace(/\.[^/.]+$/, '');
-
-
-            var fileList;
-
-            if (Platform.OS === 'android') {
-                fileList = (await SAF.listFiles(platformFolder.folderUri)).map(file => file.name);
-            } else {
-                // For iOS, use expo-file-system
-                fileList = await FileSystem.readDirectoryAsync(platformFolder.folderUri);
-            }
+            const fileList = await listFolderFileNames(platformFolder.folderUri);
 
             // Check if the ROM file exists in the platform folder
-            const romExists = fileList.some(file => file.includes(fileNameWithoutExtension));
+            const romExists = romFileExistsIn(fileList, romFile);
 
             if (romExists) {
                 console.log('ROM already exists in the folder:', romFile.file_name);
@@ -65,13 +79,38 @@ export const useRomFileSystem = () => {
 
     }, [searchPlatformFolder]);
 
-    const isRomDownloaded = useCallback((romFile: RomFile): boolean => {
+    const isRomDownloaded = useCallback((romFile?: RomFile): boolean => {
+        if (!romFile) return false;
         return fileChecks[romFile.rom_id] || false;
     }, [fileChecks]);
 
-    const isCheckingRom = useCallback((romFile: RomFile): boolean => {
+    const isCheckingRom = useCallback((romFile?: RomFile): boolean => {
+        if (!romFile) return false;
         return checking[romFile.rom_id] || false;
     }, [checking]);
+
+    // Checks many ROM files against one folder with a single listing and a
+    // single state update, instead of one listing and re-render per file.
+    const checkRomFilesInFolder = useCallback(async (romFiles: (RomFile | undefined)[], platformFolder: PlatformFolder): Promise<void> => {
+        const validFiles = romFiles.filter((romFile): romFile is RomFile => !!romFile);
+        if (validFiles.length === 0 || !platformFolder?.folderUri) {
+            return;
+        }
+
+        let fileList: string[] = [];
+        try {
+            fileList = await listFolderFileNames(platformFolder.folderUri);
+        } catch (error) {
+            console.error('Error checking existing files:', error);
+        }
+
+        const results: Record<number, boolean> = {};
+        for (const romFile of validFiles) {
+            // A ROM counts as downloaded if any of its files is present
+            results[romFile.rom_id] = results[romFile.rom_id] || romFileExistsIn(fileList, romFile);
+        }
+        setFileChecks(prev => ({ ...prev, ...results }));
+    }, []);
 
     const checkMultipleRoms = useCallback(async (romsFiles: RomFile[], platformFolder: PlatformFolder): Promise<void> => {
         // Only check ROMs that haven't been checked yet
@@ -95,6 +134,7 @@ export const useRomFileSystem = () => {
     }, [checkIfRomExists, fileChecks, checking]);
 
     const refreshRomCheck = useCallback(async (romFile: RomFile, platformFolder: PlatformFolder): Promise<boolean> => {
+        if (!romFile) return false;
 
         console.log('Refreshing ROM check for:', romFile.file_name);
 
@@ -119,6 +159,7 @@ export const useRomFileSystem = () => {
         isRomDownloaded,
         isCheckingRom,
         checkMultipleRoms,
+        checkRomFilesInFolder,
         refreshRomCheck,
         fileChecks,
         checking
@@ -128,6 +169,7 @@ export const useRomFileSystem = () => {
         isRomDownloaded,
         isCheckingRom,
         checkMultipleRoms,
+        checkRomFilesInFolder,
         refreshRomCheck,
         fileChecks,
         checking

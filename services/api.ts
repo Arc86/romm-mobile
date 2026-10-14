@@ -300,6 +300,23 @@ class ApiClient {
         }
     }
 
+    // Adds the first file of each sibling ROM to its group's files. Siblings
+    // without files are skipped, and one failing sibling doesn't fail the page.
+    private async attachSiblingFiles(roms: Rom[]): Promise<void> {
+        await Promise.all(roms.map(async (rom) => {
+            if (!rom.files) rom.files = [];
+            if (!rom.siblings) return;
+            await Promise.all(rom.siblings.map(async (sibling) => {
+                try {
+                    const siblingFile = (await this.request<Rom>(`/api/roms/${sibling.id}`)).files?.[0];
+                    if (siblingFile) rom.files.push(siblingFile);
+                } catch (error) {
+                    console.error(`Failed to fetch sibling ROM ${sibling.id}:`, error);
+                }
+            }));
+        }));
+    }
+
     async getPlatforms(): Promise<Platform[]> {
         return this.request<Platform[]>('/api/platforms');
     }
@@ -348,15 +365,7 @@ class ApiClient {
         }
 
         if (includeSiblings) {
-            // Fetch siblings for each ROM
-            await Promise.all(roms.items.map(async (rom) => {
-                if (rom.siblings) {
-                    await Promise.all(rom.siblings.map(async (sibling) => {
-                        const siblingFile = await this.request<Rom>(`/api/roms/${sibling.id}`);
-                        rom.files.push(siblingFile.files[0]);
-                    }));
-                }
-            }));
+            await this.attachSiblingFiles(roms.items);
         }
 
         return roms;
@@ -368,15 +377,7 @@ class ApiClient {
         const roms = response.items;
 
         if (includeSiblings) {
-            // Fetch siblings for each ROM
-            await Promise.all(roms.map(async (rom) => {
-                if (rom.siblings) {
-                    await Promise.all(rom.siblings.map(async (sibling) => {
-                        const siblingFile = await this.request<Rom>(`/api/roms/${sibling.id}`);
-                        rom.files.push(siblingFile.files[0]);
-                    }));
-                }
-            }));
+            await this.attachSiblingFiles(roms);
         }
 
         return roms;
@@ -402,14 +403,7 @@ class ApiClient {
 
         // Fetch siblings for each ROM
         if (includeSiblings) {
-            await Promise.all(roms.map(async (rom) => {
-                if (rom.siblings) {
-                    await Promise.all(rom.siblings.map(async (sibling) => {
-                        const siblingFile = await this.request<Rom>(`/api/roms/${sibling.id}`);
-                        rom.files.push(siblingFile.files[0]);
-                    }));
-                }
-            }));
+            await this.attachSiblingFiles(roms);
         }
 
         return res;
